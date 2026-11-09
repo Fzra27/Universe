@@ -1,16 +1,25 @@
 import * as THREE from 'three';
 import {Body, Scale, solar, displayPosition} from './catalog';
 import {FlightControls} from './controls';
-const globeVertex = `varying vec3 vNormal;varying vec3 vLocal;varying vec3 vWorld;void main(){vNormal=normalize(normalMatrix*normal);vLocal=position;vWorld=(modelMatrix*vec4(position,1.)).xyz;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
-const globeFragment = `uniform vec3 uColor;uniform float uEarth;uniform float uGas;uniform float uTime;varying vec3 vNormal;varying vec3 vLocal;varying vec3 vWorld;
+function softPoints(parameters:THREE.PointsMaterialParameters){
+  const material=new THREE.PointsMaterial(parameters);
+  material.onBeforeCompile=shader=>{shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+    float pointRadius=length(gl_PointCoord-vec2(0.5));
+    if(pointRadius>0.5)discard;
+    diffuseColor.a*=1.0-smoothstep(0.12,0.5,pointRadius);`);};
+  return material;
+}
+const globeVertex = `varying vec3 vNormal;varying vec3 vLocal;varying vec3 vWorld;varying vec2 vUv;void main(){vUv=uv;vNormal=normalize(normalMatrix*normal);vLocal=position;vWorld=(modelMatrix*vec4(position,1.)).xyz;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+const globeFragment = `uniform vec3 uColor;uniform float uEarth;uniform float uGas;uniform float uTime;uniform sampler2D uEarthTexture;uniform float uEarthReady;varying vec2 vUv;varying vec3 vNormal;varying vec3 vLocal;varying vec3 vWorld;
 float hash(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}float noise(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(mix(hash(i),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);}
-void main(){vec3 p=normalize(vLocal);float n=noise(p*4.)*.6+noise(p*9.)*.25+noise(p*23.)*.15;vec3 col=uColor*(.72+n*.5);if(uGas>.5)col=uColor*(.65+.4*sin(p.y*35.+noise(p*9.)*4.));if(uEarth>.5){float land=smoothstep(.49,.54,n);col=mix(vec3(.018,.12,.26),mix(vec3(.1,.27,.19),vec3(.46,.42,.22),noise(p*12.)),land);col=mix(col,vec3(.84,.91,.92),smoothstep(.83,.96,abs(p.y)));float clouds=smoothstep(.58,.73,noise(p*8.+vec3(uTime*.005,0.,0.))*.7+noise(p*22.)*.3);col=mix(col,vec3(.95),clouds*.8);}float light=max(dot(normalize(vNormal),normalize(vec3(-.65,.45,1.))),0.);col*=.06+light*.94;float rim=pow(1.-max(vNormal.z,0.),3.5);col+=vec3(.15,.45,.63)*rim*uEarth*.55;gl_FragColor=vec4(col,1.);}`;
+void main(){vec3 p=normalize(vLocal);float n=noise(p*4.)*.6+noise(p*9.)*.25+noise(p*23.)*.15;vec3 col=uColor*(.72+n*.5);if(uGas>.5)col=uColor*(.65+.4*sin(p.y*35.+noise(p*9.)*4.));if(uEarth>.5){float land=smoothstep(.49,.54,n);col=mix(vec3(.018,.12,.26),mix(vec3(.1,.27,.19),vec3(.46,.42,.22),noise(p*12.)),land);col=mix(col,vec3(.84,.91,.92),smoothstep(.83,.96,abs(p.y)));col=mix(col,texture2D(uEarthTexture,vUv).rgb,uEarthReady);float clouds=smoothstep(.58,.73,noise(p*8.+vec3(uTime*.005,0.,0.))*.7+noise(p*22.)*.3);col=mix(col,vec3(.95),clouds*.3);}float light=max(dot(normalize(vNormal),normalize(vec3(-.65,.45,1.))),0.);col*=.06+light*.94;float rim=pow(1.-max(vNormal.z,0.),3.5);col+=vec3(.15,.45,.63)*rim*uEarth*.55;gl_FragColor=vec4(col,1.);}`;
 export interface EngineCallbacks {onSelect:(b:Body)=>void;onFrame:(fps:number)=>void;onAction:(a:string)=>void;onLock:(locked:boolean)=>void}
 export class UniverseEngine {
   renderer:THREE.WebGLRenderer;scene=new THREE.Scene();camera=new THREE.PerspectiveCamera(55,1,.01,30000);controls:FlightControls;
   scale:Scale='solar'; selected:Body=solar[3];labels=true;darkMatter=false;paused=false;
   private world=new THREE.Group();private backdrop=new THREE.Group();private matter=new THREE.Group();private selection=new THREE.Group();
   private pickables:THREE.Object3D[]=[];private starPoints:THREE.Points|undefined;private starBodies:Body[]=[];
+  private earthTexture=new THREE.Texture();private earthReady=false;
   private bodies:Body[]=[];private clock=new THREE.Clock();private frameId=0;private time=0;private frames=0;private elapsed=0;
   private labelElements:{body:Body;el:HTMLDivElement}[]=[];
   private travel:{from:THREE.Vector3;to:THREE.Vector3;target:THREE.Vector3;elapsed:number}|undefined;
@@ -19,6 +28,9 @@ export class UniverseEngine {
     this.renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));this.renderer.setClearColor('#04070d');this.renderer.outputColorSpace=THREE.SRGBColorSpace;
     this.renderer.domElement.setAttribute('aria-label','Interactive 3D universe. Click to look around; use WASD to fly.');
+    this.earthTexture=new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}textures/earth-daymap.jpg`,()=>{
+      this.earthReady=true;this.world.traverse(o=>{if(o instanceof THREE.Mesh&&o.material instanceof THREE.ShaderMaterial)o.material.uniforms.uEarthReady.value=1;});
+    });this.earthTexture.colorSpace=THREE.SRGBColorSpace;
     host.append(this.renderer.domElement);this.labelRoot=document.createElement('div');this.labelRoot.className='world-labels';host.append(this.labelRoot);
     this.controls=new FlightControls(this.camera,this.renderer.domElement);this.controls.onAction=a=>a==='release'?this.controls.release():this.cb.onAction(a);this.controls.onLock=cb.onLock;
     this.scene.add(this.world,this.backdrop,this.matter,this.selection);
@@ -36,7 +48,7 @@ export class UniverseEngine {
       const c=new THREE.Color().setHSL(.52+rand()*.16,.1+rand()*.3,.3+rand()*.6);colors.push(c.r,c.g,c.b);
     }
     const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));g.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
-    const p=new THREE.Points(g,new THREE.PointsMaterial({size:1.7,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:.75}));p.frustumCulled=false;this.backdrop.add(p);
+    const p=new THREE.Points(g,softPoints({size:1.7,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:.75}));p.frustumCulled=false;this.backdrop.add(p);
     // A subtle procedural Milky Way band. Decorative, not a catalog of individual stars.
     const gp=[],gc=[];
     for(let i=0;i<19000;i++){
@@ -45,7 +57,7 @@ export class UniverseEngine {
       gp.push(v.x,v.y,v.z);const c=new THREE.Color().setHSL(.61+rand()*.09,.22,.14+rand()*.16);gc.push(c.r,c.g,c.b);
     }
     const gg=new THREE.BufferGeometry();gg.setAttribute('position',new THREE.Float32BufferAttribute(gp,3));gg.setAttribute('color',new THREE.Float32BufferAttribute(gc,3));
-    this.backdrop.add(new THREE.Points(gg,new THREE.PointsMaterial({size:2,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:.36,blending:THREE.AdditiveBlending,depthWrite:false})));
+    this.backdrop.add(new THREE.Points(gg,softPoints({size:2,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:.36,blending:THREE.AdditiveBlending,depthWrite:false})));
   }
   private createMatter(){
     const rand=this.random(178),pos=[];
@@ -57,7 +69,7 @@ export class UniverseEngine {
       }
     }
     const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
-    this.matter.add(new THREE.Points(g,new THREE.PointsMaterial({color:'#7f72cf',size:3,transparent:true,opacity:.14,blending:THREE.AdditiveBlending,depthWrite:false})));this.matter.visible=false;
+    this.matter.add(new THREE.Points(g,softPoints({color:'#7f72cf',size:3,transparent:true,opacity:.14,blending:THREE.AdditiveBlending,depthWrite:false})));this.matter.visible=false;
   }
   private dispose(group:THREE.Group){group.traverse(o=>{if(o instanceof THREE.Mesh||o instanceof THREE.Line||o instanceof THREE.Points){o.geometry.dispose();for(const m of Array.isArray(o.material)?o.material:[o.material])m.dispose();}});group.clear();}
   setCatalog(bodies:Body[]){this.bodies=bodies;this.setScale(this.scale);}
@@ -70,7 +82,7 @@ export class UniverseEngine {
   private buildSolar(){
     for(const b of solar){
       const r=this.bodyRadius(b),g=new THREE.SphereGeometry(r,56,40);
-      const mat=b.id==='sun'?new THREE.MeshBasicMaterial({color:'#ffe4a3'}):new THREE.ShaderMaterial({vertexShader:globeVertex,fragmentShader:globeFragment,uniforms:{uColor:{value:new THREE.Color(b.color)},uEarth:{value:b.id==='earth'?1:0},uGas:{value:['jupiter','saturn','uranus','neptune'].includes(b.id)?1:0},uTime:{value:0}}});
+      const mat=b.id==='sun'?new THREE.MeshBasicMaterial({color:'#ffe4a3'}):new THREE.ShaderMaterial({vertexShader:globeVertex,fragmentShader:globeFragment,uniforms:{uColor:{value:new THREE.Color(b.color)},uEarth:{value:b.id==='earth'?1:0},uGas:{value:['jupiter','saturn','uranus','neptune'].includes(b.id)?1:0},uTime:{value:0},uEarthTexture:{value:this.earthTexture},uEarthReady:{value:this.earthReady?1:0}}});
       const mesh=new THREE.Mesh(g,mat);mesh.position.fromArray(displayPosition(b,'solar'));mesh.userData.body=b;this.world.add(mesh);this.pickables.push(mesh);this.addLabel(b);
       if(b.id==='sun'){
         const glow=new THREE.Mesh(new THREE.SphereGeometry(r*1.22,32,24),new THREE.MeshBasicMaterial({color:'#ffbb66',transparent:true,opacity:.1,side:THREE.BackSide,blending:THREE.AdditiveBlending,depthWrite:false}));mesh.add(glow);
@@ -92,9 +104,9 @@ export class UniverseEngine {
       const p=displayPosition(b,this.scale);pos.push(...p);const c=new THREE.Color(b.color);colors.push(c.r,c.g,c.b);this.starBodies.push(b);
     }
     const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
-    this.starPoints=new THREE.Points(g,new THREE.PointsMaterial({size:this.scale==='stellar'?2:1,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:this.scale==='stellar'?.8:.18}));this.world.add(this.starPoints);
+    this.starPoints=new THREE.Points(g,softPoints({size:this.scale==='stellar'?2:1,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:this.scale==='stellar'?.8:.18}));this.world.add(this.starPoints);
     const ep:number[]=[];for(const b of this.bodies)if(b.kind==='Planet'&&b.host)ep.push(...displayPosition(b,this.scale));
-    const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.Float32BufferAttribute(ep,3));this.world.add(new THREE.Points(eg,new THREE.PointsMaterial({color:'#81d9c3',size:1.8,sizeAttenuation:false,transparent:true,opacity:.35})));
+    const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.Float32BufferAttribute(ep,3));this.world.add(new THREE.Points(eg,softPoints({color:'#81d9c3',size:1.8,sizeAttenuation:false,transparent:true,opacity:.35})));
     for(const b of this.bodies.filter(b=>b.kind==='Galaxy'||b.kind==='Black hole')){
       if(this.scale==='stellar'&&b.scale==='cosmic')continue;
       const group=new THREE.Group();group.position.fromArray(displayPosition(b,this.scale));this.world.add(group);
@@ -109,7 +121,7 @@ export class UniverseEngine {
           gp.push(Math.cos(angle)*radius,(rand()-.5)*(.8+2*(1-radius/12)),Math.sin(angle)*radius*.65);
           const c=new THREE.Color(b.color).multiplyScalar(.4+rand()*.6);gc.push(c.r,c.g,c.b);
         }
-        const gg=new THREE.BufferGeometry();gg.setAttribute('position',new THREE.Float32BufferAttribute(gp,3));gg.setAttribute('color',new THREE.Float32BufferAttribute(gc,3));group.add(new THREE.Points(gg,new THREE.PointsMaterial({size:1.5,vertexColors:true,sizeAttenuation:false,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false})));
+        const gg=new THREE.BufferGeometry();gg.setAttribute('position',new THREE.Float32BufferAttribute(gp,3));gg.setAttribute('color',new THREE.Float32BufferAttribute(gc,3));group.add(new THREE.Points(gg,softPoints({size:1.5,vertexColors:true,sizeAttenuation:false,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false})));
         const center=new THREE.Mesh(new THREE.SphereGeometry(.9,16,12),new THREE.MeshBasicMaterial({color:b.color}));center.userData.body=b;group.add(center);this.pickables.push(center);
         group.rotation.z=.4;group.rotation.x=.3;
       }
@@ -124,8 +136,8 @@ export class UniverseEngine {
     const desired:Scale=b.scale;
     if(this.scale!==desired)this.setScale(desired);
     this.updateSelection();const target=new THREE.Vector3().fromArray(displayPosition(b,this.scale));
-    const r=this.bodyRadius(b);const offset=new THREE.Vector3(r*3.4,r*1.65,r*4.5);const to=target.clone().add(offset);
-    if(instant){this.camera.position.copy(to);this.controls.lookAt(target);this.travel=undefined;}
+    const r=this.bodyRadius(b);const offset=new THREE.Vector3(r*2.6,r*1.15,r*3.5);const to=target.clone().add(offset);
+    if(instant||window.matchMedia('(prefers-reduced-motion: reduce)').matches){this.camera.position.copy(to);this.controls.lookAt(target);this.travel=undefined;}
     else this.travel={from:this.camera.position.clone(),to,target,elapsed:0};
   }
   overview(){this.travel=undefined;this.camera.position.set(...(this.scale==='solar'?[90,115,160]:this.scale==='stellar'?[200,180,350]:[250,250,430]) as [number,number,number]);this.controls.lookAt(new THREE.Vector3());}
@@ -149,9 +161,9 @@ export class UniverseEngine {
     const typing=document.activeElement instanceof HTMLInputElement||document.activeElement instanceof HTMLSelectElement;
     this.controls.enabled=!this.paused&&!typing;
     this.controls.update(dt);
-    if(this.travel){
+    if(this.travel&&!this.paused){
       // Any deliberate flight input cancels cinematic travel.
-      if(this.controls.keys.size)this.travel=undefined;
+      if(this.controls.keys.size||this.controls.moving)this.travel=undefined;
       else {this.travel.elapsed+=dt;const t=Math.min(this.travel.elapsed/1.6,1),ease=t*t*(3-2*t);this.camera.position.lerpVectors(this.travel.from,this.travel.to,ease);this.controls.lookAt(this.travel.target);if(t===1)this.travel=undefined;}
     }
     this.backdrop.position.copy(this.camera.position);this.matter.visible=this.darkMatter;
@@ -165,5 +177,5 @@ export class UniverseEngine {
     }
     this.renderer.render(this.scene,this.camera);this.frames++;this.elapsed+=dt;if(this.elapsed>.7){this.cb.onFrame(Math.round(this.frames/this.elapsed));this.frames=0;this.elapsed=0;}
   };
-  disposeAll(){cancelAnimationFrame(this.frameId);this.dispose(this.world);this.dispose(this.backdrop);this.dispose(this.selection);this.dispose(this.matter);this.renderer.dispose();}
+  disposeAll(){cancelAnimationFrame(this.frameId);this.dispose(this.world);this.dispose(this.backdrop);this.dispose(this.selection);this.dispose(this.matter);this.renderer.dispose();this.earthTexture.dispose();}
 }

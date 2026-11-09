@@ -14,7 +14,6 @@ planets = []
 for p in raw:
     if p['ra'] is None or p['dec'] is None or p['sy_dist'] is None or p['sy_dist'] <= 0: continue
     planets.append([p['pl_name'],p['hostname'],round(p['ra'],7),round(p['dec'],7),round(p['sy_dist']*3.261563777,7),p['pl_orbsmax'],p['pl_rade'],p['discoverymethod'],p['disc_year']])
-save('exoplanets.json', planets)
 print('Exoplanets with measured distance:', len(planets), 'of', len(raw), flush=True)
 hyg_url = 'https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/CURRENT/hygdata_v41.csv'
 try: data = get(hyg_url)
@@ -27,6 +26,8 @@ for s in csv.DictReader(io.StringIO(data.decode('utf-8'))):
     if d <= 0 or d >= 100000: continue # HYG sentinel means missing distance
     # Every HYG star with a finite measured distance, not just naked-eye stars.
     stars.append([int(s['id']),s['proper'] or s['bf'] or ('HIP '+s['hip'] if s['hip'] else 'HYG '+s['id']),round(float(s['ra'])*15,7),round(float(s['dec']),7),round(d*3.261563777,7),float(s['mag'] or 15),s['spect'],s['ci']])
+# Replace snapshots only after both sources were successfully downloaded and parsed.
+save('exoplanets.json', planets)
 save('stars.json',stars)
 print('HYG stars with measured distance:',len(stars),flush=True)
 save('manifest.json',{'retrieved':datetime.date.today().isoformat(),'exoplanets':len(planets),'archiveTotal':len(raw),'stars':len(stars),'sources':{'exoplanets':url,'stars':hyg_url},'omittedExoplanets':len(raw)-len(planets),'note':'Only objects with positive finite catalog distances are mapped. Exoplanets are placed at their host-star coordinates; planetary orbits are unresolved.'})

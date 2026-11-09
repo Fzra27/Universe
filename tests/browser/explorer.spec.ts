@@ -11,7 +11,7 @@ test('renders real catalog, switches scales, travels and measures across systems
  await page.locator('#matter').click();await expect(page.locator('#matter')).toHaveAttribute('aria-pressed','true');
  await page.locator('#help-open').click();await expect(page.locator('#help')).toBeVisible();await page.locator('#help-close').click();
  await expect(page.locator('#help')).not.toBeVisible();expect(errors).toEqual([]);
- await page.screenshot({path:'/workspace/work/universe-desktop.png'});
+ await page.screenshot({path:test.info().outputPath('desktop.png')});
 });
 test('same-host planet separation is explicitly unresolved and imported names are safe',async({page})=>{
  await ready(page);
@@ -23,14 +23,40 @@ test('same-host planet separation is explicitly unresolved and imported names ar
  await page.locator('#search').fill('<img');await expect(page.locator('.result-row')).toHaveCount(1);await expect(page.locator('.result-row img')).toHaveCount(0);
  await page.locator('.result-row').click();await expect(page.locator('#object-name')).toHaveText('<img src=x onerror=alert(1)>');
 });
-test('controller movement, drift deadzone, right-stick look, and Home button',async({page})=>{
+test('controller detection, menu toggle, and Home button',async({page})=>{
  await page.addInitScript(()=>{(window as any).__pad={axes:[0,0,0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0})),connected:true,mapping:'standard',id:'Synthetic standard gamepad'};navigator.getGamepads=()=>[(window as any).__pad];});
  await ready(page);await expect(page.locator('#pad-status')).toContainText('GAMEPAD CONNECTED');
+ await page.evaluate(()=>{(window as any).__pad.buttons[9]={pressed:true,value:1};});
+ await expect(page.locator('#catalog-drawer')).toBeVisible();
+ await page.evaluate(()=>{(window as any).__pad.buttons[9]={pressed:false,value:0};});await page.waitForTimeout(100);
+ await page.evaluate(()=>{(window as any).__pad.buttons[9]={pressed:true,value:1};});
+ await expect(page.locator('#catalog-drawer')).not.toBeVisible();
+ await page.evaluate(()=>{(window as any).__pad.buttons[9]={pressed:false,value:0};});
  await page.evaluate(()=>{(window as any).__pad.axes=[0,-1,.6,0];});await page.waitForTimeout(600);
  await page.evaluate(()=>{(window as any).__pad.axes=[0,0,0,0];(window as any).__pad.buttons[2]={pressed:true,value:1};});await expect(page.locator('#object-name')).toHaveText('Earth');
 });
 test('mobile tools remain visible and catalog works',async({page})=>{
  await page.setViewportSize({width:390,height:844});await ready(page);await expect(page.locator('#focus')).toBeVisible();
  await page.locator('#catalog-open').click();await page.locator('#search').fill('Saturn');await page.locator('.result-row').filter({hasText:'Saturn'}).first().click();await expect(page.locator('#object-name')).toHaveText('Saturn');
- await page.screenshot({path:'/workspace/work/universe-mobile.png'});
+ await page.screenshot({path:test.info().outputPath('mobile.png')});
+});
+
+test('flight input changes camera position and yaw, pauses cleanly, and ignores drift',async({page})=>{
+ await ready(page);
+ const actual=await page.evaluate(async()=>{
+  const THREE=await import(/* @vite-ignore */ '/node_modules/three/build/three.module.js');
+  const {FlightControls}=await import('/src/controls.ts');
+  const camera=new THREE.PerspectiveCamera();const canvas=document.createElement('canvas');
+  const pad:any={axes:[.1,.1,.1,.1],buttons:Array.from({length:17},()=>({pressed:false,value:0})),connected:true,mapping:'standard',id:'Input test'};
+  const original=navigator.getGamepads;navigator.getGamepads=()=>[pad];
+  const c=new FlightControls(camera,canvas);c.speed=5;c.update(1);
+  const drift=camera.position.length();const yawBefore=c.yaw;
+  pad.axes=[1,-1,.5,-.5];c.update(1);
+  const moved=camera.position.length(),turned=c.yaw!==yawBefore,pitched=c.pitch!==0;
+  const beforePause=camera.position.clone();c.enabled=false;c.update(1);const paused=camera.position.equals(beforePause);
+  pad.axes=[0,0,0,0];c.enabled=true;c.yaw=0;c.pitch=0;camera.position.set(0,0,0);c.keys.add('KeyW');c.update(1);const keyboard=camera.position.z;
+  navigator.getGamepads=original;
+  return {drift,moved,turned,pitched,paused,keyboard};
+ });
+ expect(actual.drift).toBe(0);expect(actual.moved).toBeCloseTo(5);expect(actual.turned).toBe(true);expect(actual.pitched).toBe(true);expect(actual.paused).toBe(true);expect(actual.keyboard).toBe(-5);
 });
